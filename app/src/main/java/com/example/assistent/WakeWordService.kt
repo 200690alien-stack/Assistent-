@@ -7,22 +7,17 @@ import android.app.Service
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
 
 class WakeWordService : Service() {
 
     private var speechRecognizer: SpeechRecognizer? = null
-    private lateinit var recognizerIntent: Intent
-
-    private val handler = Handler(Looper.getMainLooper())
-
-    private var lastTriggerTime = 0L
+    private var finished = false
 
     companion object {
         private const val CHANNEL_ID = "wake_word_channel"
@@ -33,283 +28,144 @@ class WakeWordService : Service() {
         super.onCreate()
 
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, createNotification("Слушаю..."))
-
-        setupSpeechRecognizer()
-    }
-
-    private fun setupSpeechRecognizer() {
+        startForeground(
+            NOTIFICATION_ID,
+            createNotification("Слушаю одну фразу...")
+        )
 
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            updateNotification("Распознавание речи недоступно")
+            finishListening("Распознавание речи недоступно")
             return
         }
 
-        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
-
-        recognizerIntent = Intent(
-            RecognizerIntent.ACTION_RECOGNIZE_SPEECH
-        ).apply {
-
-            putExtra(
-                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
-            )
-
-            putExtra(
-                RecognizerIntent.EXTRA_LANGUAGE,
-                "ru-RU"
-            )
-
-            putExtra(
-                RecognizerIntent.EXTRA_PARTIAL_RESULTS,
-                true
-            )
-
-            putExtra(
-                RecognizerIntent.EXTRA_MAX_RESULTS,
-                5
+        try {
+            setupSpeechRecognizer()
+        } catch (error: Exception) {
+            finishListening(
+                "Не удалось включить микрофон: " +
+                    (error.message ?: "неизвестная ошибка")
             )
         }
+    }
 
-        speechRecognizer?.setRecognitionListener(
+    private fun setupSpeechRecognizer() {
+        val recognizer = SpeechRecognizer.createSpeechRecognizer(this)
+        speechRecognizer = recognizer
+
+        recognizer.setRecognitionListener(
             object : RecognitionListener {
 
-                override fun onReadyForSpeech(params: Bundle?) {
-                    updateNotification("Слушаю...")
-                }
+                override fun onReadyForSpeech(params: Bundle?) {}
 
-                override fun onBeginningOfSpeech() {
-                }
+                override fun onBeginningOfSpeech() {}
 
-                override fun onRmsChanged(rmsdB: Float) {
-                }
+                override fun onRmsChanged(rmsdB: Float) {}
 
-                override fun onBufferReceived(buffer: ByteArray?) {
-                }
+                override fun onBufferReceived(buffer: ByteArray?) {}
 
-                override fun onEndOfSpeech() {
-                }
+                override fun onEndOfSpeech() {}
 
                 override fun onError(error: Int) {
-                    restartListening()
+                    if (finished) return
+
+                    val message = when (error) {
+                        SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
+                            "Речь не услышана. Нажми включение снова."
+
+                        SpeechRecognizer.ERROR_NO_MATCH ->
+                            "Фраза не распознана. Нажми включение снова."
+
+                        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ->
+                            "Нет разрешения на микрофон"
+
+                        SpeechRecognizer.ERROR_RECOGNIZER_BUSY ->
+                            "Распознавание занято. Код ошибки: $error"
+
+                        else ->
+                            "Ошибка распознавания: $error"
+                    }
+
+                    finishListening(message)
                 }
 
                 override fun onResults(results: Bundle?) {
+                    if (finished) return
 
-                    val phrases =
-                        results?.getStringArrayList(
+                    val phrase = results
+                        ?.getStringArrayList(
                             SpeechRecognizer.RESULTS_RECOGNITION
                         )
+                        ?.firstOrNull()
 
-                    checkPhrases(phrases)
-
-                    restartListening()
+                    finishListening(
+                        if (phrase.isNullOrBlank()) {
+                            "Фраза не распознана"
+                        } else {
+                            "Распознано: $phrase"
+                        }
+                    )
                 }
 
-                override fun onPartialResults(partialResults: Bundle?) {
-
-                    val phrases =
-                        partialResults?.getStringArrayList(
-                            SpeechRecognizer.RESULTS_RECOGNITION
-                        )
-
-                    checkPhrases(phrases)
-                }
+                override fun onPartialResults(
+                    partialResults: Bundle?
+                ) {}
 
                 override fun onEvent(
                     eventType: Int,
                     params: Bundle?
-                ) {
-                }
+                ) {}
             }
         )
 
-        startListening()
-    }
-
-    private fun startListening() {
-        try {
-            speechRecognizer?.startListening(recognizerIntent)
-        } catch (_: Exception) {
-            restartListening()
-        }
-    }
-
-    private fun restartListening() {
-
-        handler.removeCallbacksAndMessages(null)
-
-        handler.postDelayed(
-            {
-                try {
-                    speechRecognizer?.cancel()
-                    speechRecognizer?.startListening(recognizerIntent)
-                } catch (_: Exception) {
-                }
-            },
-            700
-        )
-    }
-
-    private fun checkPhrases(phrases: ArrayList<String>?) {
-
-        if (phrases == null) return
-
-        for (phrase in phrases) {
-
-            val text = phrase
-                .lowercase()
-                .replace(",", "")
-                .replace(".", "")
-                .replace("!", "")
-                .replace("?", "")
-                .trim()
-
-            when {
-
-                containsAny(
-                    text,
-                    "gpt слушай",
-                    "джипити слушай",
-                    "gpt ха слушай",
-                    "джипити ха слушай"
-                ) -> {
-                    triggerListen()
-                    return
-                }
-
-                containsAny(
-                    text,
-                    "gpt смотри",
-                    "джипити смотри",
-                    "gpt ха смотри",
-                    "джипити ха смотри"
-                ) -> {
-                    triggerLook()
-                    return
-                }
-
-                containsAny(
-                    text,
-                    "эй ты здесь",
-                    "эй ты тут",
-                    "hey ты здесь",
-                    "hey ты тут"
-                ) -> {
-                    triggerAreYouHere()
-                    return
-                }
-            }
-        }
-    }
-
-    private fun containsAny(
-        text: String,
-        vararg variants: String
-    ): Boolean {
-
-        return variants.any {
-            text.contains(it)
-        }
-    }
-
-    private fun canTrigger(): Boolean {
-
-        val now = System.currentTimeMillis()
-
-        if (now - lastTriggerTime < 1500) {
-            return false
-        }
-
-        lastTriggerTime = now
-        return true
-    }
-
-    private fun triggerListen() {
-
-        if (!canTrigger()) return
-
-        updateNotification("GPT: слушаю команду")
-
-        // Сюда следующим шагом подключим
-        // передачу твоей дальнейшей речи ассистенту.
-    }
-
-    private fun triggerLook() {
-
-        if (!canTrigger()) return
-
-        updateNotification("GPT: смотрю экран")
-
-        // Сюда следующим шагом подключим
-        // получение текущего кадра из ScreenCaptureService.
-    }
-
-    private fun triggerAreYouHere() {
-
-        if (!canTrigger()) return
-
-        updateNotification("GPT: я здесь")
-
-        // Здесь потом сделаем голосовой ответ.
-    }
-
-    private fun updateNotification(text: String) {
-
-        val notification =
-            createNotification(text)
-
-        val manager =
-            getSystemService(
-                NotificationManager::class.java
+        val recognizerIntent = Intent(
+            RecognizerIntent.ACTION_RECOGNIZE_SPEECH
+        ).apply {
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
             )
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+        }
 
-        manager.notify(
-            NOTIFICATION_ID,
-            notification
-        )
+        recognizer.startListening(recognizerIntent)
     }
 
-    private fun createNotification(
-        text: String
-    ): Notification {
+    private fun finishListening(message: String) {
+        if (finished) return
+        finished = true
 
-        return NotificationCompat.Builder(
-            this,
-            CHANNEL_ID
-        )
+        Toast.makeText(
+            applicationContext,
+            message,
+            Toast.LENGTH_LONG
+        ).show()
+
+        stopSelf()
+    }
+
+    private fun createNotification(text: String): Notification {
+        return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Assistent")
             .setContentText(text)
-            .setSmallIcon(
-                android.R.drawable.ic_btn_speak_now
-            )
+            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
             .build()
     }
 
     private fun createNotificationChannel() {
-
-        if (
-            Build.VERSION.SDK_INT >=
-            Build.VERSION_CODES.O
-        ) {
-
-            val channel =
-                NotificationChannel(
-                    CHANNEL_ID,
-                    "Voice listener",
-                    NotificationManager.IMPORTANCE_LOW
-                )
-
-            val manager =
-                getSystemService(
-                    NotificationManager::class.java
-                )
-
-            manager.createNotificationChannel(
-                channel
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Voice listener",
+                NotificationManager.IMPORTANCE_LOW
             )
+
+            getSystemService(NotificationManager::class.java)
+                .createNotificationChannel(channel)
         }
     }
 
@@ -318,24 +174,23 @@ class WakeWordService : Service() {
         flags: Int,
         startId: Int
     ): Int {
-
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
+        finished = true
 
-        handler.removeCallbacksAndMessages(null)
-
-        speechRecognizer?.stopListening()
-        speechRecognizer?.cancel()
-        speechRecognizer?.destroy()
-
+        val recognizer = speechRecognizer
         speechRecognizer = null
 
-        super.onDestroy()
+        try {
+            recognizer?.cancel()
+        } finally {
+            recognizer?.destroy()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            super.onDestroy()
+        }
     }
 
-    override fun onBind(
-        intent: Intent?
-    ): IBinder? = null
+    override fun onBind(intent: Intent?): IBinder? = null
 }
