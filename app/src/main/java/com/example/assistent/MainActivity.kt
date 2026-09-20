@@ -16,52 +16,73 @@ import androidx.core.content.ContextCompat
 
 class MainActivity : ComponentActivity() {
 
-    private val requestMicrophone =
-        registerForActivityResult(
-            ActivityResultContracts.RequestPermission()
-        ) { granted ->
-            if (granted) {
-                startListener()
-            } else {
-                showMessage("Нет разрешения на микрофон")
+    private val microphone = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) startListener()
+        else Toast.makeText(this, "Нет доступа к микрофону", Toast.LENGTH_SHORT).show()
+    }
+
+    private val screen = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val data = result.data
+            if (data != null) {
+                val service = Intent(this, ScreenCaptureService::class.java)
+                service.putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, result.resultCode)
+                service.putExtra(ScreenCaptureService.EXTRA_DATA, data)
+                ContextCompat.startForegroundService(this, service)
             }
         }
-
-    private val screenCaptureLauncher =
-        registerForActivityResult(
-            ActivityResultContracts.StartActivityForResult()
-        ) { result ->
-            if (result.resultCode == Activity.RESULT_OK) {
-                val data = result.data
-
-                if (data != null) {
-                    val serviceIntent =
-                        Intent(
-                            this,
-                            ScreenCaptureService::class.java
-                        ).apply {
-                            putExtra(
-                                ScreenCaptureService.EXTRA_RESULT_CODE,
-                                result.resultCode
-                            )
-                            putExtra(
-                                ScreenCaptureService.EXTRA_RESULT_DATA,
-                                data
-                            )
-                        }
-
-                    ContextCompat.startForegroundService(
-                        this,
-                        serviceIntent
-                    )
-                }
-            } else {
-                showMessage("Захват экрана отменён")
-            }
-        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val padding =
-            (20 *
+        val layout = LinearLayout(this)
+        layout.orientation = LinearLayout.VERTICAL
+        layout.setPadding(24, 48, 24, 24)
+
+        fun button(title: String, action: () -> Unit) {
+            val button = Button(this)
+            button.text = title
+            button.setOnClickListener { action() }
+            layout.addView(button)
+        }
+
+        button("Включить микрофон") {
+            if (ContextCompat.checkSelfPermission(
+                    this, Manifest.permission.RECORD_AUDIO
+                ) == PackageManager.PERMISSION_GRANTED
+            ) {
+                startListener()
+            } else {
+                microphone.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        }
+
+        button("Выключить микрофон") {
+            stopService(Intent(this, WakeWordService::class.java))
+        }
+
+        button("Включить захват экрана") {
+            val manager = getSystemService(
+                Context.MEDIA_PROJECTION_SERVICE
+            ) as MediaProjectionManager
+            screen.launch(manager.createScreenCaptureIntent())
+        }
+
+        button("Выключить захват экрана") {
+            stopService(Intent(this, ScreenCaptureService::class.java))
+        }
+
+        setContentView(layout)
+    }
+
+    private fun startListener() {
+        ContextCompat.startForegroundService(
+            this, Intent(this, WakeWordService::class.java)
+        )
+    }
+}
